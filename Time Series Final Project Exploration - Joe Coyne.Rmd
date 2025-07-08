@@ -1,0 +1,491 @@
+---
+title: "Time Series Final Project Exploration"
+author: "Joe Coyne"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(astsa)
+library(forecast)
+library(imputeTS)
+library(car)
+```
+
+```{r}
+acc0 <- read.csv("US_Accidents_March23.csv")
+acc0
+```
+
+```{r}
+acc1 <- acc0 %>% 
+  mutate(Start_Time = as.Date(Start_Time)) %>% 
+  select(-End_Time, -End_Lat, -End_Lng, -Description)
+acc1
+```
+
+```{r}
+acc <- acc1 %>%
+  group_by(Start_Time) %>%
+  mutate(n = n()) %>%
+  ungroup()
+```
+
+```{r}
+acc2 <- acc %>% 
+  select(Start_Time,n) %>% 
+  distinct(Start_Time, .keep_all = T)
+
+acc2
+```
+
+```{r}
+# Create a complete sequence of dates from the minimum to maximum date in your data
+all_dates <- seq(min(acc2$Start_Time), max(acc2$Start_Time), by = "day")
+
+# Create a data frame for all dates
+complete_dates <- data.frame(Start_Time = all_dates)
+
+# Merge the original dataset with the complete date range
+acc2_filled <- merge(complete_dates, acc2, by = "Start_Time", all.x = TRUE)
+
+# Replace NA values in the 'accidents' column with 0 for days with no accidents
+#acc2_filled$n[is.na(acc2_filled$n)] <- 0
+
+# Now acc2_filled contains all dates with accidents
+acc2_filled
+```
+
+```{r}
+acc2_filled$Year <- format(acc2_filled$Start_Time, "%Y")
+```
+
+```{r}
+library(ggplot2)
+
+# Create a data frame with 'Start_Time' and 'n'
+acc2_filled$Year <- as.Date(acc2_filled$Start_Time)
+df <- data.frame(Year = acc2_filled$Year, Count = acc2_filled$n)
+
+# Plot using ggplot2
+ggplot(df, aes(x = Year, y = Count)) +
+  geom_line() +
+  scale_x_date(date_labels = "%Y", date_breaks = "1 year") +
+  labs(title = "US Car Accidents Over Time", x = "Year", y = "Total Accidents")
+
+ggplot(df, aes(x = Year, y = Count)) +
+  geom_line() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month") +
+  labs(title = "US Car Accidents Over Time", 
+       x = "Date", 
+       y = "Total Accidents") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+ggplot(df, aes(x = Year, y = Count)) +
+  geom_point() +
+  geom_line() +
+  scale_x_date(date_labels = "%b %d", date_breaks = "1 day") +
+  coord_cartesian(xlim = as.Date(c("2019-03-01", "2019-03-31"))) +
+  labs(title = "US Car Accidents in March 2019", 
+       x = "Date", 
+       y = "Total Accidents") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+Since there were a bunch of zeros at the start, begin time series at date 2016-02-08, and then impute the scattered zeroes.
+```{r}
+acc3 <- acc2_filled %>% 
+  filter(Start_Time >= "2016-02-08")
+acc3
+
+acc3 %>% 
+  filter(is.na(n))
+```
+38 missing observations
+
+```{r}
+ggplot_na_distribution(ts(acc3$n))
+```
+
+
+```{r}
+acc_final <- na_interpolation(acc3) # consider seasonal decomposition, regression imputation (with seasonal terms)
+
+
+acc_final <- na_seasplit(acc3, find_frequency = T)
+```
+
+
+
+```{r}
+acc_ts <- ts(acc_final$n)
+
+plot(acc_ts)
+```
+
+```{r}
+acc_ts1=ts(acc_ts,frequency=7)
+m=decompose(acc_ts1)
+```
+
+
+## Investingating after 2023
+
+```{r}
+acc_23 <- acc_final %>% 
+  filter(Start_Time >= "2023-01-01")
+
+acc3 %>% 
+  filter(Start_Time >= "2023-01-01")
+
+plot(ts(acc_23$n))
+```
+
+
+
+## Creating a SARIMA plot
+```{r}
+acf2(acc_ts)
+```
+Lots of auto-correlation from ACF (seems to be a spike every 7 lags), not as much with PACF
+
+```{r}
+log_acc=log(acc_ts)
+plot(log_acc)
+```
+Doesn't really help with stationarity, still have those massive jumps between time 1500 and 2500, so we will use the original time series data.
+
+```{r}
+acf2(log_acc)
+```
+
+
+
+Investigating the downward spikes
+```{r}
+acc_final %>% 
+  mutate(log_acc = log(n)) %>% 
+  arrange(log_acc)
+```
+Most of the downward spikes in the log_acc plot occur when the number of accidents are less than 10, thus the log is about 2 or less. This could be because of two reasons, one that there were just an unusually low number of accidents that day, or more likely, some of the recording was done incorrectly. Maybe the total number of accidents was lost, so a placeholder of 1 was used, or maybe some of the traffic sensors and cameras were down for the day. Maybe some weekends have less accidents reported if the departments of transportation / law enforcement agencies are closed or have limited staffing.
+
+Some interesting trends:
+* Oct 21 - Oct 29 of 2022 all have 1 accident per day
+* A lot of these lower numbers occur in 2022
+
+
+
+```{r}
+plot((acc_ts)^2)
+```
+
+
+```{r}
+d_acc=diff(acc_ts,7)
+
+plot(d_acc)
+```
+This plot is a lot more stationary, although it still does have the increase in variance between times 2000 and 2500.
+
+```{r}
+acf2(d_acc)
+```
+The correlation is a lot less now that we have differenced at lag 7
+
+
+```{r}
+sarima(d_acc,1,0,0) # AIC = 16.668
+sarima(d_acc,0,0,1) # AIC = 16.798
+sarima(d_acc,7,0,0) # AIC = 16.522
+sarima(d_acc,0,0,8) # AIC = 16.113
+sarima(d_acc,7,0,8) # AIC = 16.080
+```
+
+```{r}
+sarima(d_acc,4,0,8) # AIC = 16.079
+```
+
+```{r}
+dat=d_acc
+uplim=5
+aicmat=matrix(double((uplim+1)^2),uplim+1,uplim+1)
+for (i in 0:uplim){
+  for (j in 0:uplim){
+    aicmat[i+1,j+1]=arima(dat,order=c(i,0,j))$aic}}
+aicmat #Remember that the first row and column and for 0!
+```
+
+```{r}
+sarima(d_acc,3,0,5) # AIC = 16.47496
+```
+This model has one of the lowest AIC's while still limiting the amount of predictors going into the model, and most of the predictors are less than 0.05.
+
+
+```{r}
+sarima.for(acc_ts,49,3,0,5)
+```
+
+
+#### Using the log differenced data
+
+```{r}
+logd_acc=diff(log_acc,7)
+
+plot(logd_acc)
+```
+
+```{r}
+acf2(logd_acc)
+```
+
+
+```{r}
+sarima(logd_acc,0,0,0) # AIC = 3.498707
+sarima(logd_acc,1,0,0) # AIC = 2.86657
+sarima(logd_acc,2,0,0) # AIC = 2.865136
+sarima(logd_acc,0,0,1) # AIC = 3.053441
+sarima(logd_acc,0,0,4) # AIC = 2.805649
+sarima(logd_acc,2,0,4) # AIC = 2.690258
+sarima(logd_acc,5,0,4) # AIC = 2.512686
+```
+
+```{r}
+dat=logd_acc
+uplim=5
+aicmat=matrix(double((uplim+1)^2),uplim+1,uplim+1)
+for (i in 0:uplim){
+  for (j in 0:uplim){
+    aicmat[i+1,j+1]=arima(dat,order=c(i,0,j))$aic}}
+aicmat #Remember that the first row and column are for 0!
+```
+
+```{r}
+sarima(logd_acc,5,0,4,1,0,1,7) # AIC = 2.435631
+```
+
+
+```{r}
+sarima.for(acc_ts,49,5,0,4,1,0,1,7)
+```
+
+**Need ARMA model for residuals**
+
+```{r}
+t=1:2609
+tc=t-mean(t) #t - 1305. This is the centered time
+tc2=(tc^2)
+cor(tc,tc2)
+```
+
+```{r}
+ind1=rep(c(1,rep(0,6)),373)
+ind2=c(0,ind1[1:2608]) #Since the total length should be n=2609.
+ind3=c(0,ind2[1:2608])
+ind4=c(0,ind3[1:2608])
+ind5=c(0,ind4[1:2608])
+ind6=c(0,ind5[1:2608])
+
+cbind(ind1,ind2,ind3,ind4,ind5,ind6)
+```
+
+
+```{r}
+# Trim everything to 2602
+tc_trim <- tc[1:2602]
+tc2_trim <- tc2[1:2602]
+ind1_trim <- ind1[1:2602]
+ind2_trim <- ind2[1:2602]
+ind3_trim <- ind3[1:2602]
+ind4_trim <- ind4[1:2602]
+ind5_trim <- ind5[1:2602]
+ind6_trim <- ind6[1:2602]
+```
+
+```{r}
+df <- data.frame(logd_acc, tc = tc_trim, tc2 = tc2_trim,
+                 ind1 = ind1_trim, ind2 = ind2_trim,
+                 ind3 = ind3_trim, ind4 = ind4_trim,
+                 ind5 = ind5_trim, ind6 = ind6_trim)
+
+out <- lm(logd_acc ~ tc + tc2 + ind1 + ind2 + ind3 + ind4 + ind5 + ind6, data = df)
+
+summary(out)
+```
+None of the indicators are significant in predicting the differenced log accidents per day.
+
+
+```{r}
+residuals=out$residuals
+
+plot(residuals,type='l')
+```
+```{r}
+acf2(residuals) #Try out AR(1).
+```
+
+*****************************************
+*****************************************
+Adressing other issues:
+- Seasonality?
+- COVID indicator
+- Weird trend in 2023
+
+- Look at state trends
+
+```{r}
+t=time(acc_ts)
+tc2=(t-mean(t))^2
+cor(t,tc2)  # no multicollinearity concerns
+
+out1=lm(acc_final$n~t+tc2)
+summary(out1)
+```
+
+```{r}
+res1=out1$residuals
+
+#What frequencies are important?
+x=res1
+n=length(x)
+I=abs(fft(x))^2/n
+P=(4/n)*I[1:(n/2)]
+plot((0:(n/2-1))/n,P,type='o',xlab='Frequency',ylab='Scaled Periodogram')
+```
+Scaled periodogram has spikes at 1/7, 2/7, ... --> indicating seasonality of period 7
+
+
+```{r}
+tvec=1:length(t)
+cos1=cos(2*pi*tvec/12)
+sin1=sin(2*pi*tvec/12)
+
+cos2=cos(2*pi*tvec*2/12)
+sin2=sin(2*pi*tvec*2/12)
+
+out2=lm(acc_final$n~t+tc2+cos1+sin1+cos2+sin2)
+summary(out2)
+```
+Sine and cosine functions are not useful in predicting total number of accidents.
+
+
+### COVID Indicator
+```{r}
+acc_final %>% 
+  filter(Start_Time >= "2020-06-01")
+```
+
+```{r}
+t=1:2609
+tc=t-mean(t) #t - 1305. This is the centered time
+tc2=(tc^2)
+cor(tc,tc2)
+```
+
+
+```{r}
+acc_final$log_acc <- log(acc_final$n)
+
+acc_final$log_diff <- c(NA, diff(acc_final$log_acc, differences = 1))
+
+ind_20=(acc_final$Start_Time >= "2020-07-01")
+ind_20_sep=(acc_final$Start_Time >= "2020-09-10")
+ind_21=(acc_final$Start_Time >= "2021-03-01")  # DO WE NEED THIS?
+ind_23=(acc_final$Start_Time >= "2023-01-01")
+
+out=lm(acc_final$log_acc ~ tc + tc2 + ind_20 + ind_20_sep + ind_23)
+summary(out)
+
+# c(rep(0,1000),rep(1,200),rep(0,1000))
+```
+
+```{r}
+residuals=out$residuals
+plot(residuals,type='l')
+acf2(residuals)
+```
+
+
+```{r}
+ind1=rep(c(1,rep(0,6)),373)
+ind1_trim <- ind1[1:2609]
+ind2=c(0,ind1[1:2608]) #Since the total length should be n=2609.
+ind3=c(0,ind2[1:2608])
+ind4=c(0,ind3[1:2608])
+ind5=c(0,ind4[1:2608])
+ind6=c(0,ind5[1:2608])
+```
+
+```{r}
+out2=lm(acc_final$log_acc ~ tc + tc2 + ind1_trim + ind2 + ind3 + ind4 + ind5 + ind6 + ind_20 + ind_20_sep + ind_23)
+summary(out2)
+```
+Adding in the different indicators for times when the time series looked like it changed (due to COVID or otherwise) also made the differencing by 7 indicators also significant
+
+```{r}
+scatter.smooth(out2$residuals ~ out2$fitted.values, lpars = list(col = "red", lwd = 3), span = 0.67, main="Residuals vs Fitted")
+qqnorm(out2$residuals)
+qqline(out2$residuals)
+```
+
+```{r}
+vif(out2)
+```
+
+
+```{r}
+residuals2=out2$residuals
+plot(residuals2,type='l')
+acf2(residuals2)
+```
+
+tc2 found not significant for both models
+```{r}
+sarima(acc_final$log_acc,0,0,1, xreg = cbind(tc,ind1_trim,ind2,ind3,ind4,ind5,ind6,ind_20,ind_20_sep,ind_23)) # AIC = 2.594017
+
+sarima(acc_final$log_acc,2,0,1, xreg = cbind(tc,ind1_trim,ind2,ind3,ind4,ind5,ind6,ind_20,ind_20_sep,ind_23)) # AIC = 2.4571 - FINAL MODEL
+```
+
+```{r}
+dat=acc_final$log_acc
+uplim=5
+aicmat=matrix(double((uplim+1)^2),uplim+1,uplim+1)
+for (i in 0:uplim){
+  for (j in 0:uplim){
+    aicmat[i+1,j+1]=arima(dat,order=c(i,0,j))$aic}}
+aicmat #Remember that the first row and column and for 0!
+```
+
+```{r}
+sarima(acc_final$log_acc,3,0,5, xreg = cbind(ind1_trim,ind2,ind3,ind4,ind5,ind6,ind_20,ind_20_sep,ind_23)) # AIC = 2.458865  
+
+# centered time and centered time squared found non-significant predictors
+```
+
+
+```{r}
+newtc=(2610:2658-mean(t)) #New times are 145 to 180 (144+36).
+ni1=rep(c(1,rep(0,6)),7) #New January indicator values.
+ni2=c(0,ni1[1:48])
+ni3=c(0,ni2[1:48])
+ni4=c(0,ni3[1:48])
+ni5=c(0,ni4[1:48])
+ni6=c(0,ni5[1:48])
+
+ni20=rep(1,49)
+ni20_sep=rep(1,49)
+ni21=rep(1,49)
+ni23=rep(1,49)
+
+newxreg=cbind(ni1,ni2,ni3,ni4,ni5,ni6,ni20,ni20_sep,ni23)
+```
+
+
+```{r}
+sarima.for(exp(log_acc),49,2,0,1,xreg = cbind(ind1_trim,ind2,ind3,ind4,ind5,ind6,ind_20,ind_20_sep,ind_23),newxreg=newxreg)
+```
+
