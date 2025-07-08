@@ -1,0 +1,505 @@
+---
+title: "Time Series Final Project Extra Analyses"
+author: "Joe Coyne"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(astsa)
+library(forecast)
+library(imputeTS)
+library(maps)
+library(mapproj)
+library(olsrr)
+library(grid)
+library(scales)
+```
+
+Explorations: - Accidents by State - Accidents by Time Zone - Accidents by Severity - Accidents by Weather - Accidents by Time of Day (Day vs Night)
+
+```{r}
+acc0 <- read.csv("US_Accidents_March23.csv")
+acc0
+```
+
+```{r}
+acc1 <- acc0 %>% 
+  mutate(Start_Time = as.Date(Start_Time)) %>% 
+  select(-End_Time, -End_Lat, -End_Lng, -Description)
+acc1
+```
+
+```{r}
+acc <- acc1 %>%
+  group_by(Start_Time) %>%
+  mutate(n = n()) %>%
+  ungroup()
+```
+
+```{r}
+acc_ex <- acc %>% 
+  select(-ID, -Source, -Start_Lat, -Start_Lng, -Distance.mi., -Street, -City, -County, -Zipcode, -Country, -Airport_Code, -Weather_Timestamp, -Wind_Chill.F., -Humidity..., -Pressure.in., -Visibility.mi., -Wind_Direction, -Wind_Speed.mph., -Precipitation.in., -Amenity, -Bump, -Crossing, -Give_Way, -Junction, -No_Exit, -Railway, -Roundabout, -Station, -Stop, -Traffic_Calming, -Traffic_Signal, -Turning_Loop, -Civil_Twilight, -Nautical_Twilight, -Astronomical_Twilight) %>% 
+  mutate(Year = year(Start_Time)) %>% 
+  distinct(Start_Time, .keep_all = T)
+acc_ex
+```
+
+## Accidents by State
+
+```{r}
+acc_state <- acc_ex %>% 
+  select(Year, n, State) %>% 
+  group_by(Year, State) %>%
+  summarize(total_n = sum(n, na.rm = TRUE))
+acc_state
+```
+
+```{r}
+acc_state %>% 
+  arrange(State)
+#Some states only have data from certain years -> ex: Arkansas only has data from 2022
+```
+
+```{r}
+states <- map_data("state")
+```
+
+```{r}
+acc_state$State <- trimws(acc_state$State)
+acc_state$state_name <- state.name[sapply(acc_state$State, \(x) which(x == state.abb)[1])]
+```
+
+```{r}
+acc_state <- acc_state %>%
+  mutate(region = tolower(state_name))
+```
+
+```{r}
+# List of all 50 states plus Washington D.C.
+all_states <- c(
+  "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", 
+  "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", 
+  "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", 
+  "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", 
+  "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", 
+  "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", 
+  "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", 
+  "wyoming")
+
+# Create a data frame with all combinations of Year and State
+all_combinations <- expand.grid(
+  Year = unique(acc_ex$Year), 
+  region = all_states
+)
+
+# Summarize the data to get total_n by Year and State
+acc_state <- acc_state %>% 
+  select(Year, total_n, region) %>% 
+  group_by(Year, region) %>%
+  summarize(total_n = sum(total_n, na.rm = TRUE), .groups = "drop")
+
+# Left join with the complete list of Year and State combinations
+acc_state_complete <- all_combinations %>%
+  left_join(acc_state, by = c("Year", "region")) %>%
+  mutate(total_n = ifelse(is.na(total_n), 0, total_n))
+
+acc_state_complete %>% 
+  filter(Year == 2016)
+```
+
+```{r}
+accidents.geo <- merge(states, acc_state_complete, sort = FALSE, by = "region")
+accidents.geo <- accidents.geo[order(accidents.geo$order), ]
+accidents.geo <- accidents.geo %>%
+  mutate(fill_color = ifelse(total_n == 0, NA, total_n))  # NA for no accidents, actual total_n for non-zero
+ 
+accidents.geo16 <- accidents.geo %>% 
+  filter(Year == 2016)
+accidents.geo17 <- accidents.geo %>% 
+  filter(Year == 2017)
+accidents.geo18 <- accidents.geo %>% 
+  filter(Year == 2018)
+accidents.geo19 <- accidents.geo %>% 
+  filter(Year == 2019)
+accidents.geo20 <- accidents.geo %>% 
+  filter(Year == 2020)
+accidents.geo21 <- accidents.geo %>% 
+  filter(Year == 2021)
+accidents.geo22 <- accidents.geo %>% 
+  filter(Year == 2022)
+accidents.geo23 <- accidents.geo %>% 
+  filter(Year == 2023)
+```
+
+
+```{r}
+state_totals <- acc_state_complete %>%
+  group_by(region) %>%
+  summarise(total_accidents = sum(total_n, na.rm = TRUE))
+
+accidents.geo <- left_join(accidents.geo, state_totals, by = "region")
+
+accidents.geo %>% 
+  group_by(region) %>% 
+  arrange(total_accidents) %>% 
+  distinct(region, total_accidents)
+```
+
+```{r}
+accidents_fill <- accidents.geo %>%
+  group_by(region, Year) %>%
+  slice(1) %>%
+  ungroup()
+
+accidents_plot <- left_join(accidents.geo, accidents_fill %>% select(region, Year, fill_color = total_accidents), 
+                            by = c("region", "Year"))
+
+ggplot(accidents_plot, aes(long, lat, group = group)) +
+  geom_polygon(aes(fill = fill_color.y), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",
+    high = "blue4",
+    na.value = "gray",
+    name = "Total Accidents"
+  ) +
+  labs(title = "Total Accidents by State (2016–2023)") +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+
+```{r}
+# Total
+grand_total <- sum(acc_state_complete$total_n, na.rm = TRUE)
+
+
+ggplot(accidents.geo, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = total_accidents), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State (2016-2023)") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("Grand Total:", format(grand_total, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+
+# Want to add the summed total accidents for each year
+```
+New York and California have the most total accidents from 2016-2023 by far, with New York at 2.2 million and California at 1.9 million. Michigan (755,720), New Jersey (428,285), and Illinois (364,048) have the next highest.
+
+Delaware, Maine, Mississippi, New Hampshire, North Dakota, Oklahoma, and South Dakota all have 0 reported total accidents. West Virginia only has 7 reported total accidents over this same time frame. These seems unlikely and are probably reporting issues.
+
+```{r}
+# 2016
+grand_total16 <- accidents.geo16 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo16, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2016") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2016 Total:", format(grand_total16, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2017
+grand_total17 <- accidents.geo17 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+
+ggplot(accidents.geo17, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2017") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2017 Total:", format(grand_total17, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2018
+grand_total18 <- accidents.geo18 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo18, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2018") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2018 Total:", format(grand_total18, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2019
+grand_total19 <- accidents.geo19 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo19, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2019") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2019 Total:", format(grand_total19, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2020
+grand_total20 <- accidents.geo20 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo20, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2020") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2020 Total:", format(grand_total20, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2021
+grand_total21 <- accidents.geo21 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo21, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2021") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2021 Total:", format(grand_total21, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2022
+grand_total22 <- accidents.geo22 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo22, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2022") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2022 Total:", format(grand_total22, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+```
+
+```{r}
+# 2023
+grand_total23 <- accidents.geo23 %>%
+  group_by(region) %>%
+  slice(1) %>%  # Take just one row per state
+  summarise(state_total = first(total_n)) %>%
+  summarise(grand_total = sum(state_total, na.rm = TRUE)) %>%
+  pull(grand_total)
+
+ggplot(accidents.geo23, aes(long, lat)) +
+  geom_polygon(aes(group = group, fill = fill_color), color = "white") +
+  coord_map() +
+  scale_fill_gradient(
+    low = "dodgerblue",  # Color for lower non-zero total_n values
+    high = "blue4",  # Color for higher non-zero total_n values
+    na.value = "gray",  # Color for total_n == 0 (no accidents) - will be gray
+    name = "Total Accidents",
+    labels = comma
+  ) +
+  labs(title = "Total Accidents by State - 2023") +
+  theme_void() +
+   theme(
+    plot.title = element_text(hjust = 0.5))
+
+grid.text(
+  label = paste("2023 Total:", format(grand_total23, big.mark = ",")),
+  x = unit(0.97, "npc"),  # Near right side
+  y = unit(0.1, "npc"),   # Lower on the page
+  just = "right",
+  gp = gpar(fontsize = 10)
+)
+
+#only goes up until April 2023
+```
+
+## Regression to Predict Total Daily Accidents
+
+```{r}
+acc_ex
+```
+
+```{r}
+acc_reg <- acc_ex %>% 
+  mutate(State = as.factor(State), Timezone = as.factor(Timezone), Weather_Condition = as.factor(Weather_Condition), Sunrise_Sunset = as.factor(Sunrise_Sunset))
+
+out=lm(n~Severity+State+Timezone+Temperature.F.+Weather_Condition+Sunrise_Sunset+Year, data = acc_reg)
+
+ols_step_forward_p(out)
+k=ols_step_best_subset(out)
+k
+```
+
+```{r}
+#summary(out)
+anova(out)
+```
+
+```{r}
+out2=lm(n~Severity+State+Timezone+Temperature.F.+Weather_Condition+Year, data = acc_reg)
+summary(out2)
+anova(out2)
+```
+**We find that Severity, State, Timezone, Temperature, Weather_Condition, and Year are all significant in predicting the total number of accidents in a day.**
